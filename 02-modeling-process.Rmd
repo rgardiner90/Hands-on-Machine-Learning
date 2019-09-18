@@ -1,0 +1,217 @@
+# Modeling Process
+
+## Data Splitting
+
+We want to see how well our model can generalize, especially when theory isn't driving our analysis. To do so, we generally split the data into a testing and training datset.  The training dataset can be worked on as much as you want.  Once you find the model you like the most, you run the training data through it. The model's performance on the test set is our **generalization error**.  
+
+NOTE: the test set should only be used once.  There should also be no overlap between the training and testing datasets.
+
+You generally split the data into 60/40, 70/30 or 80/20 training/testing.  Putting too much into training (more than 80), you risk overfitting and not being able to properly test the model in the test dataset.
+
+You can generally split the data by simple random sampling or stratified.
+
+### Simple random sampling
+
+The book has multiple ways, but I will use the caret package verion.  But first, we need the data:
+
+```{r}
+library(AmesHousing)
+library(rsample)
+library(tidyverse)
+library(h2o)
+library(caret)
+
+ames <- make_ames() # Ames house prices dataset
+churn <- rsample::attrition %>% # employee churn, I believe
+  mutate_if(is.ordered, factor, ordered = FALSE)
+```
+
+Using simple random sampling does not control for any data attributes, such as the distribution of the dependent variable.  With a large enough sample size, the sampling approach should rsult in a similar distributio nof Y, between the training and testing.
+
+```{r}
+set.seed(05271990)
+
+index_ames <- createDataPartition(ames$Sale_Price, p = 0.7, list = FALSE)
+train_ames <- ames[index_ames, ]
+test_ames <- ames[-index_ames, ]
+
+train_balance <- cbind(train_ames$Sale_Price, "train")
+test_balance <- cbind(test_ames$Sale_Price, "test")
+
+balance <- as_tibble(rbind(train_balance, test_balance)) %>%
+  mutate(price = as.numeric(V1))
+
+str(balance$V1)
+
+balance %>%
+  ggplot(aes(x = price, color = V2)) +
+  geom_density() +
+  labs(color = "Dataset")
+```
+
+
+### Stratified sampling
+
+Stratified sampling seems less common, but may be helpful if we have class imbalance (90% pass and 10% fail).  Thus, this is more common in classification problems.
+
+The easiest way to do a stratified is to use hte `rample` package.  In this instance we will look at the church dataset's `attrition` variable.  This has a class imbalance where 84% don't leave:
+
+```{r}
+table(churn$Attrition) %>%
+  prop.table()
+
+# stratified sampling with rsample package
+split_strat <- initial_split(churn, prop = 0.7, strata = "Attrition")
+train_strat <- training(split_strat)
+test_strat <- testing(split_strat)
+
+# testing to see if we have similar proportions:
+
+table(train_strat$Attrition) %>%
+  prop.table()
+
+table(test_strat$Attrition) %>%
+  prop.table()
+```
+
+
+## Resampling Methods
+
+Remember that we don't iterate the evaluation of our models by looking at the test dataset.  But how do we evaluate our model while we are still in the model tuning process? One idea is to create another holdout "test" dataset that is a subset of your training data. The primary problem with this is that you may not have a lot of data.  This problem lessens the larger your datasets.
+
+**Resampling methods** "provide an laternative approach by allowing us to repeatedly fit a model of interest to parts of the training data nad testing the performance on other parts.  The two most commonly used resampling methods include *k-folds cross validation* and *boostrapping*."
+
+### K-Fold Cross Validation
+
+This is a resampling method that randomly divides the training data into *k* groups (or folds) of about equal size.  The model is fit on $k-1$ folds and then the remaining fold is used to actually gauge model performance.  This is repeated $k$ tiems; each time, a differnet fold is treated as the validation set.  This process results in $k$ estimates of hte genrlaization error.  "Thus, the $k$-fold CV estiamte is computed by averageing the $k$ test errors, providing us with an approximation of hte error we might expect on unseen data."
+
+This means that with k-fold, every observation in the training data will be hold out one time to be included in the subsampled test dataset. By practice, we usually have 5 or 10 folds, but this is not a formal rule.  However, as $k$ gets larger, the benefit diminishes.
+
+```{r}
+vfold_cv(ames, v = 10)
+```
+
+
+### Boostrapping
+
+A bootstrap sample is a random sample of the data taken with replacement (Efron and Tibshirani 1986). This means that, after a data point is selected for inclusion in the subset, it’s still available for further selection. A bootstrap sample is the same size as the original data set from which it was constructed. Figure 2.6 provides a schematic of bootstrap sampling where each bootstrap sample contains 12 observations just as in the original data set. Furthermore, bootstrap sampling will contain approximately the same distribution of values (represented by colors) as the original data set.
+
+Because boostrapping allows for done with replacement, you will likely contain duplicate values.  There is less variablility in the error measurement in boostrapping compared to k-folds, mainly because you will have replicated observations. The tradeoff, however, is that you increase the risk of bias, especially in smaller datasets.
+
+This is commonly done in random forests.
+
+```{r}
+bootstraps(ames, time = 10)
+```
+
+
+### Bias Variance Trade-off
+
+Prediction errors can generally be put into two categories: error due to "bias" and error due to "variance."  These are almost always seen as a trade off.
+
+#### Bias
+
+Bias is the differnece between the predicted and the actual (think residuals).  Linear models generally have this problem because they are rigid and have trouble capturing non-linear, non-monotonic relationships.
+
+#### Variance
+
+Error due to variacne is defined as the variability of a mdoel prediction for a given data point.  This is primarily a problem of over fitting the data. Thus, although they achieve really great results for the training data, it may not generalize well with unseen data.  This is more common in k-nearest neighbor, decision trees, and gradient boosting machines.  
+
+Using resampling procedures are critical to reduce the risk of overfitting.  
+
+
+#### Hypterparameter tuning
+
+Hyperparameters are knobs that we can turn that controls the complexity of machine learning algorithms, thus influecing the bias variance trade-off (think "how deep of a decision tree").  Not all algorithms have hyperparameters (OLS for example), but most have at least 1.
+
+When doing tuning, you need some method for identifying the optimal solution. One informal method is to use the elbow method for k-means clustering. You can do this manually by changing the values, or you can do a grid search (elbow method again).  Sometimes you can do a full cartesian grid search like the elbow method, but this becomes too difficult when you have a lot of hyperparameters and possible combinations.  IN that one you likely want to do more like random grid searches which "explores randomly selected hyperparameter values from a rang of possible values, **early stopping** which allows you to stop a serach once reduction in the error stops marginally improving, and **adaptive resampling** via futility analysis which adaptively resamples candidate hyperparameter values based on approximately optimal performance".
+
+
+## Model Evaluation
+
+In the past, goodness-of-fit measures were the primary forms of evaluation, but these were abused.  Now it is much more common to assess predictive accuracy via a **loss function**.  "Loss functions are metrics that compare the predicted value to the actual value." 
+
+THere are mnay loos functions to choose when assessing a model, and each has its own unique abilities.  Especially important is the way a loss function will empahsize certain types of errors.  You should use context and careful consideration when thinking about this.  Additionally, you want to make sure that you are using the same metric across models when doing comparisons.
+
+### Regression models
+
+1. MSE: mean squared error is the average of hte squared error.  Most common metric to use.  Objective: *minimize*.
+2. RMSE: root mean squared error.  This takes the square root of MSE so that your error is in the same units as your response varialbe.  Example: if your response variable units are dollars, the units of MSE are dollars-squared, but RMSE will be dollars.  Objective: *minimize*.
+3. Deviance: should for mean residual deviance. "In essence, it provides a degree to which a model explains the variation in a set of data when using MLE."  Objective: *minimize*.
+4. MAE: mean absolute error.  Same as MSE, but instead of squaring you take the absolute difference between actual and predicted. This places less emphasis on the larger errors.  Objective: *minimize*.
+5. RMLE: Root mean suqared logarithmic error.  Very similar to RMSE, but performs a `log()` on the actual and predicted values prior to computing hte differnece.  This is helpful when your response varialbe has a wide range of values. Objective: *minimize*.
+6. R2: you know what it is.  Don't place too much empahsis on this model.  Objective: *maximize*.
+
+### Classification models
+
+1. misclassification: This is a confusion matrix with the proportion of wrong classifications compared to all observations.  Objective: *minimize*.
+2. Mean per class error: this is the average error rate for each class.  I think this is mainly just used to do if you have class imbalance. Objective: *minimize*.
+3. MSE: Mean suquare error.  COmpute the distance from 1 to the probability suggested.  So, say we have three classes, A, B, and C, and your model predicts a probability of 0.91 for A, 0.07 for B, and 0.02 for C. If the correct answer was A the  $MSE = 0.09^2 = 0.0081$, if it is B   $MSE = 0.93^2 = 0.8649$, if it is C $MSE = 0.98^2 = 0.9604$. The squared component results in large differences in probabilities for the true class having larger penalties. Objective: *minimize*.
+4. Cross-entropy (aka Log Loss or Deviance): Similar to MSE but it incorporates a log of the predicted probability multiplied by the true class. Consequently, this metric disproportionately punishes predictions where we predict a small probability for the true class, which is another way of saying having high confidence in the wrong answer is really bad. Objective: *minimize*.
+5. Gini index: Mainly used with tree-based methods and commonly referred to as a measure of purity where a small value indicates that a node contains predominantly observations from a single class. Objective: *minimize*.
+
+
+Using a confusion matrix, we cna also assess the following:
+
+1. Accuracy: overall, how often is the classifier correct? Objective: "maximize".
+2. Precision: how accuraycely does the classifier predict events? This metric is concerned with maximizing the true positive to false positive ratios.  Objective: *maximize*
+3. Sensitivity (recall): How accuractely does hte classify actual events? This is the true positives divided by true positives and false negatives. Objective: *maximize*.
+4. Specificity: How accurately does the classifier classify actual non-events.  This is true negatives divided by true negatives and false positivies.  Objective: *maximize*.
+
+- AUC: Area under the curve.  A good binary classifier will have high precision and sensitivity. THis means the classifier does well when it predicts an event will and will not occur, which minimizes false positivies and false negatives.  To capture this, we often use a ROC curve that plots the false positive rate along the x-axis and the true positive rate along the y-axis.  A line that is diagonal fro mteh lower-left corner to the upper right corner represents a random guess.  The higher hte line is in the upper left-hand corner, the better.  The AUC comptues the area under the curve. Objective: *maximize*.
+
+## Doing a full example
+
+1. Split the dataset int ostratified samples to ensure consistent disctributions between the test and training sets.
+
+```{r}
+set.seed(05271990)
+
+
+split <- initial_split(ames, prop = 0.7, strata = "Sale_Price")
+ames_train <- training(split)
+ames_test <- testing(split)
+```
+
+
+2. Apply k-nearest negibor regressor using caret.
+
+Caret allwos us to say, pretty easily, the resampling method, the grid search, and the model training and validation
+
+```{r}
+cv <- trainControl(
+  method = "repeatedcv", # cross validation
+  number = 10, # 10 fold
+  repeats = 5 # repeat the process 4 times
+)
+
+# create a hyperparameter grid search
+hyper_grid <- expand.grid(k = seq(2, 25, by = 1))
+
+
+# fit knn model and perform grid search
+knn_fit <- train(
+  Sale_Price ~ ., # formula
+  data = ames_train,
+  method = "knn",
+  trainControl = cv, # we specified this object earlier
+  tuneGrid = hyper_grid, # also specified above
+  metric = "RMSE" # the objective function we are using
+)
+
+knn_fit
+```
+
+We can now look at the results of the model.  We will see that a cluster of 6 provides the best fit (lowest RMSE which translates to the fact that with 9 clusters we are, on average, wrong by 45127.01).  The figure below illustrates the cross-validated error rate across our hyperparmeter values we set.
+
+```{r}
+ggplot(knn_fit)
+```
+
+
+Just because this is our best fit, doesn't mean this is the best we can do.  We haven't done any feature or target engineering yet.  We haven't even considered other algorithms.  But at least we have a start!
+
+
+
+
+

@@ -1,0 +1,254 @@
+# Linear Regression
+
+
+While linear regression is sometimes seen as a "dull" model, it is still widely used today and many complex models are seen as either generalizations or extensions of OLS.
+
+```{r}
+library(tidyverse)
+library(AmesHousing)
+
+# modeling
+library(caret)
+
+# model interpretability
+library(vip)
+library(broom)
+```
+
+```{r}
+set.seed(05271990)
+
+ames <- make_ames() # Ames house prices dataset
+
+index_ames <- createDataPartition(ames$Sale_Price, p = 0.7, list = FALSE)
+train_ames <- ames[index_ames, ]
+test_ames <- ames[-index_ames, ]
+```
+
+THe OLS regression tries to find the best fitting line.  Best fitting in OLS is measured by minimizing the residual sum of squares RSS) which is the the square deviation of the point from the line.
+
+In the model below we are looking at square foot above ground living space on sale price.
+```{r}
+model1 <- lm(Sale_Price ~ Gr_Liv_Area, data = train_ames)
+
+summary(model1)
+```
+
+If you want to get the RMSE of the model:
+```{r}
+sigma(model1)
+```
+
+### Inference
+
+```{r}
+confint(model1, level = 0.95)
+```
+
+While the model gives us this information, these are all built upon three major assumptions:
+
+1. Independent observations
+2. The random erros have a mean of 0 and constant variance
+3. The errors are normally distributed
+
+
+
+## Multiple linear regression
+
+```{r}
+model2 <- lm(Sale_Price ~ Gr_Liv_Area + Year_Built, data = train_ames)
+summary(model2)
+```
+
+if we wanted to include all features as main effects (no interactions) to predict `Sale_Price`.
+```{r}
+model3 <- lm(Sale_Price ~ ., data = train_ames)
+summary(model3)
+```
+
+Now that we have fit 3 models, we need to determine which models are "best" (best should really be determined with things such as accuracy, time constraints, costs, etc).  The caret package's `train` can help us look at the RMSE and use cross-validation to give us an idea.
+
+```{r}
+set.seed(123)
+
+cv_model1 <- train(
+  form = Sale_Price ~ Gr_Liv_Area,
+  data = train_ames, 
+  method = "lm",
+  trControl = trainControl(method = "cv", number = 10)
+)
+
+cv_model1
+```
+
+Our cross-validated RMSE is 56,968.79 (the average RMSE across 10 CV folders). Thus we can say that the predictions of our model are about (on average) 56,968 off from the sale price.
+
+We can do the same with the other two models, then get a summary of the three:
+```{r}
+cv_model2 <- train(
+  form = Sale_Price ~ Gr_Liv_Area + Year_Built,
+  data = train_ames,
+  method = "lm",
+  trControl = trainControl(method = "cv", number = 10)
+)
+
+cv_model3 <- train(
+  form = Sale_Price ~ ., 
+  data = train_ames, 
+  method = "lm",
+  trControl = trainControl(method = "cv", number = 10)
+)
+
+summary(resamples(list(
+  model1 = cv_model1,
+  model2 = cv_model2,
+  model3 = cv_model3
+)))
+```
+
+The model with all predictors had the mowest median RMSE (28574 compared to over 40 and 50 thousand).
+
+
+## Model concerns
+
+Need to make sure the relationship is linear:
+```{r}
+p1 <- ggplot(train_ames, aes(Year_Built, Sale_Price)) + 
+  geom_point(size = 1, alpha = .4) +
+  geom_smooth(se = FALSE) +
+  scale_y_continuous("Sale price", labels = scales::dollar) +
+  xlab("Year built") +
+  ggtitle("Non-transformed variables with a \nnon-linear relationship.")
+
+p2 <- ggplot(train_ames, aes(Year_Built, Sale_Price)) + 
+  geom_point(size = 1, alpha = .4) + 
+  geom_smooth(method = "lm", se = FALSE) +
+  scale_y_log10("Sale price", labels = scales::dollar, breaks = seq(0, 400000, by = 100000)) +
+  xlab("Year built") +
+  ggtitle("Transforming variables can provide a \nnear-linear relationship.")
+
+gridExtra::grid.arrange(p1, p2, nrow = 1)
+```
+
+
+Constant variance: if violated the p-values and coefficients are invalid.  Usually fixed by transformations and the inclusion of additional vairables.  Models 1 and 2 appear to suffer from this, but not 3.
+
+```{r}
+df1 <- broom::augment(cv_model1$finalModel, data = train_ames)
+
+p1 <- ggplot(df1, aes(.fitted, .resid)) +
+  geom_point() +
+  labs(x = "Predicted values", y = "Residuals",
+       title = "Model 1", subtitle = "Sale_Price ~ Gr_Liv_Area")
+
+df2 <- broom::augment(cv_model3$finalModel, data = train_ames)
+
+p2 <- ggplot(df2, aes(.fitted, .resid)) + 
+  geom_point(size = 1, alpha = .4)  +
+  xlab("Predicted values") +
+  ylab("Residuals") +
+  ggtitle("Model 3", subtitle = "Sale_Price ~ .")
+
+gridExtra::grid.arrange(p1, p2, nrow = 1)
+```
+
+
+No autocorrelation (errors are independent): if violate, the stnadard errorrs will be smaller than they should. For example, the left plot in the figure below displays the residuals vs. the observation ID for model1. A clear pattern exists suggesting that information about the error of one observation informs the error about the next observation.
+
+```{r}
+df1 <- mutate(df1, id = row_number())
+df2 <- mutate(df2, id = row_number())
+
+p1 <- ggplot(df1, aes(id, .resid)) +
+  geom_point() +
+  xlab("Row ID") +
+  ylab("Residuals") +
+  ggtitle("Model 1",
+          subtitle = "Correlated residuals.")
+
+p2 <- ggplot(df2, aes(id, .resid)) + 
+  geom_point(size = 1, alpha = .4) +
+  xlab("Row ID") +
+  ylab("Residuals") +
+  ggtitle("Model 3",
+    subtitle = "Uncorrelated residuals.")
+
+gridExtra::grid.arrange(p1, p2, nrow = 1)
+```
+
+More observations than predictors (can't run without it).  YOu can try, though, to use regularized regression.
+
+
+No perfect multicollinearity: rarely a problem, but high multicollinearity can make it harder to detect a pattern.  For instacne we have two variables that are highly correlated, making one not significant while the other is:
+```{r}
+summary(cv_model3) %>%
+  tidy() %>%
+  filter(term %in% c("Garage_Area", "Garage_Cars"))
+```
+
+However, if we refit the full model without `Garage-Area`, the coefficient for `Garage_Cars` increase a lot and the p.value shrinks by a substantial margin.  Lastly, the results are unstable when multicollinearity is present.
+
+```{r}
+mod_wo_garage_area <- train(
+  Sale_Price ~ .,
+  data = select(train_ames, -Garage_Area),
+  method = "lm",
+  trControl = trainControl(method = "cv", number = 10)
+)
+
+summary(mod_wo_garage_area) %>%
+  tidy() %>%
+  filter(term == "Garage_Cars")
+```
+
+
+When you have a lot of problems with multicollinearity, you may have to consider options beside simply taking out the predictors.
+
+## PCR
+
+PCA allows us to represented "correlated variables with a smaller number of uncorrleated features (called principle components) and the resulting components can be used as predictors in a linear regression model.  Doing both together is called principal component regression." 
+
+To do principal component regression (PCR), we can specify that using caret by doing `method = "pcr"` within train.  When trying to find the best model, you can treat the number of components as a hyperparameter to tune.  The code below uses cross-validated PCR with 1-20 components.  Note that the code below uses the `preProcess` function to take out the near zero variances models and then to center/scale the numeric features.
+
+The bestTune and the plot both show that going to 5 components really reduces the error, but 19 technically produces the best outcome.
+```{r}
+cv_model_pcr <- train(
+  Sale_Price ~ .,
+  data = train_ames,
+  method = "pcr",
+  trControl = trainControl(method = "cv", number = 10),
+  preProcess = c("zv", "center", "scale"),
+  tuneLength = 20
+)
+
+cv_model_pcr$bestTune # best number of components is 19
+
+plot(cv_model_pcr)
+```
+
+This method is particularly nice because it can significantly improve our predictive accuracy compated to other models.  Note, however, that if our PCA step (before the regression) reduces variability by reducing the variability that is correlated with our DV, then PCA won't be much help and can even reduce our accuracy.  In cases like this, you may want to test out partial least squares.
+
+
+## Partial Least Squares (PLS)
+
+This is similar to PCR in that is "contsructs a set of linear combinations of the inputs for regression, but unlike PCR it uses the response variable to aid in the construction of the principle components."
+
+Similar to PCR, we can fit a partial least squares model by changing the `method` argument in `train()`. Additionally, we can treat the number of PCs as a hyperparameter to tune (minimizing the RMSE). The model shows a drastic decrease in error going from 1-3.  Once there, the reduction in error gets smaller.  The best number of PCs is 10 with an RMSE of 30898.27 dollars.
+
+```{r}
+pls_model <- train(
+  Sale_Price ~ .,
+  data = train_ames,
+  method = "pls",
+  trControl = trainControl(method = "cv", number = 10),
+  preProcess = c("zv", "center", "scale"),
+  tuneLength = 20
+)
+
+pls_model$bestTune
+
+plot(pls_model)
+
+pls_model$results
+```
+

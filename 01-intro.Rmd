@@ -1,0 +1,3 @@
+# Introduction {#intro}
+
+This book was used as a notebook for Hands-on Machine Learning with R.  Nothing in this is original, and should not be considered as such.

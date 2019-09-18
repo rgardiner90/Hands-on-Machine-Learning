@@ -1,0 +1,365 @@
+# Feature and Target Engineering
+
+Engineering (also known as data pre-processing) generally refers to the addition, deletion, or transformation of data.  This can be substantial work, but can also greatly increase the performance of a model.  If you would like more information on feature engineering, see the Zhend and Casari (2018) book on the subject.
+
+We will use the following packages:
+```{r}
+library(tidyverse)
+library(visdat)
+library(AmesHousing)
+library(rsample)
+
+
+library(caret)
+library(recipes)
+library(forecast)
+```
+
+We will be using the `ames_train` dataset used in the previous chapter.
+
+```{r}
+set.seed(05271990)
+
+ames <- make_ames() # Ames house prices dataset
+
+index_ames <- createDataPartition(ames$Sale_Price, p = 0.7, list = FALSE)
+train_ames <- ames[index_ames, ]
+test_ames <- ames[-index_ames, ]
+```
+
+## Target Engineering
+
+Sometimes transforming the response variable can help with the predictiveness of the model.  This is especially true with parametric models (those that make assumptions about the model).  For instance, OLS assumes normally distributed residuals.  
+
+In many cases you can try to use logarithmic or exponential transformation to help fix the model.
+
+Option 1: normalize with a log transformation.  This will help with right-skewed distributions to make them more normal.  
+
+Option 2: use a *Box Cox Transformation*.  This is more flexible than the log transformation and will find an appropriate transformation from a family of pwoer transforms tha twill transform the variable as close as possible to a norma ldistribution.  " At the core of the Box Cox transformation is an exponent, lambda ($\lambda$), which varies from -5 to 5. All values of $\lambda$ are considered and the optimal value for the given data is estimated from the training data; The “optimal value” is the one which results in the best transofrmation to an approximate normal distribution."
+
+Note that when you make the transformation you will want to do 2 things.  1. Apply transformation to both the training and testing data.  Re-transform your data so that decision-makers can easily interpret the results.
+
+```{r}
+# log transform a value
+y <- log(10)
+y
+
+# turning it back
+exp(y)
+```
+
+
+## Dealing with Missingness
+
+
+Missing data is usually lumped into two categories:
+
+1. informative missingness (there is a cause of the missing data)
+2. missing at random (the easier problem to deal with)
+
+Because each model is different in how it handels missingness (many just delete them), you want to take care of missingness before running models.  This is becuase you will want to compare models, and it becomes difficult to compare models when you are treating the data differently.
+
+### Visualizing missing data
+
+One simple way is to just get an idea of how many observations is missing data.
+
+```{r}
+sum(is.na(AmesHousing::ames_raw))
+```
+
+The raw dataset of ames has over 13000 missing observations.
+
+Heat maps are efficient ways to et an idea of missing data for small/medium-sized datasets.
+
+```{r}
+ames_raw %>%
+  is.na() %>%
+  reshape2::melt() %>%
+  ggplot(aes(Var2, Var1, fill = value)) +
+  geom_raster() +
+  scale_y_continuous(NULL, expand = c(0, 0)) +
+  scale_fill_grey(labels = c("Present", "MIssing")) +
+  labs(x = "Variable", fill = "") +
+  coord_flip() +
+  theme(axis.text.y = element_text(size = 4))
+```
+
+
+### Imputation
+
+Imputation is the process of replacing a missing value with a substituted, "best guess" value.  Imputation should be one of hte first feature engineering steps you take as it will effect any downstream pre-processing.
+
+
+#### Estimated statistic
+
+One of the simplest approaches is the impute with some descriptive statistics such as mean, median, or model.  Another option is to to do grouped statistics (not overall mean, but mean for sub-groups like women).  This is difficult with very large data sets.
+
+NOTE: imputation should be performed within the resampling process and as your data set gets larger, repeated model-based imputation can compound the computational demands.
+
+
+
+```{r}
+ames_recipe <- recipe(Sale_Price ~ ., data = train_ames) %>%
+  step_log(all_outcomes())
+
+ames_recipe %>%
+  step_medianimpute(Gr_Liv_Area)
+```
+
+#### K-nearest neighbor
+
+KNN imputs values by identifying observations with missing values, then identifying other observatiosn that are most similar based on the other availabel features, and using the values from these nearest neibhor obsevations to impute missing values.  KNN is best used on small to moderate data sets.  Be default, the `step_knnimpute()` will use 5 neighbors, but we can adjust that.
+
+```{r}
+ames_recipe %>%
+  step_knnimpute(all_predictors(), neighbors = 6)
+```
+
+
+
+#### Tree-based
+
+This is a good alternative to imputation. 
+
+```{r}
+ames_recipe %>%
+  step_bagimpute(all_predictors())
+```
+
+## Feature Filtering
+
+In many analyses, we have hundreds or even thousands of features available. Adding all of them may be uninformative and lead to longer computation times.  Additionally, many models might become over fitted with this approach. 
+
+How do you pick which ones to exclude without theory helping?
+
+Zero and near-zero variance vaiables are low-hanging fruit to eliminate.  Zero variance would mean it is a constant (which can't be computed anyways). The near-zero variance variables are those that are dominated by very few categories.
+
+The caret package can help us identify any variables that may fit our criteria (21 variables fit our threshold):
+
+```{r}
+nearZeroVar(train_ames, saveMetrics = TRUE) %>%
+  rownames_to_column() %>%
+  filter(nzv == TRUE)
+```
+
+
+## Numeric Feature Engineering
+
+Numeric variables can create a lot of problems when they are skewed, have outliers, or have a wide range in magnitudes. Tree-based models are gnerally immune to these problems but many models (GLMs, regularized regression, KNN, SVM, and neural nets) can have a lot of trouble with this.  Normalizing and standardizing heavily skewed features can help minimze these concerns.
+
+
+### Skewness
+
+Parametric models (GLMs and rgularized modesl) have distributional assumptions and can benefit from minimizing skew. If the variables are strictly positive, the Box-Cox is generally the best way to normalize.  Use the Yeo-Johnson approach if not always positive.
+
+```{r}
+recipe(Sale_Price ~ ., data = train_ames) %>%
+  step_YeoJohnson(all_numeric())
+```
+
+
+### Standardization
+
+In many models, it is often a good idea to standardize features.  Standardizing includes centering (mean of 0) and scaling (generally 1) to put all variables on the same unit.
+
+Some packages have built-in options to standardize while some do not.  However, you should standardize your variables within the recipe blueprint so that both the training and est data standardization are based on the same mean and variance.  
+
+
+```{r}
+ames_recipe <- ames_recipe %>%
+  step_center(all_numeric(), -all_outcomes()) %>%
+  step_scale(all_numeric(), -all_outcomes())
+```
+
+
+```{r}
+ames_recipe
+```
+
+
+
+## Categorical Feature Engineering
+
+Models that can take categorical variables (not all can), it is still sometimes helpful to do some pre-processing of these feature.  
+
+### Lumping
+
+Sometimes there will be features that contain levels that have very few observations.  For example, there are 28 unique neighbohoods in the Ames dataset, but several only have a few houses.
+
+```{r}
+train_ames %>%
+  count(Neighborhood) %>%
+  arrange(n)
+
+train_ames %>%
+  count(Screen_Porch) %>%
+  arrange(n)
+```
+
+SOMETIMES, it is helpful to collapse these categories using the `step_other` command.  However, lumping can lead to a loss in model performance (think race).
+
+
+```{r}
+# lump levels for two features 
+lumping <- recipe(Sale_Price ~ ., data = train_ames) %>%
+  step_other(Neighborhood, threshold = 0.05, other = "other") %>%
+  step_other(Screen_Porch, threshold = 0.1, other = ">0")
+
+
+# apply this blueprint (learn more about this later)
+apply_2_training <- prep(lumping, training = train_ames) %>%
+  bake(train_ames)
+
+
+apply_2_training %>%
+  count(Neighborhood) %>%
+  arrange(n)
+```
+
+
+### One-hot & Dummy Encoding (dummy variables)
+
+```{r}
+recipe(Sale_Price ~ ., data = train_ames) %>%
+  step_dummy(all_nominal(), one_hot = TRUE)
+```
+
+Realize, however, that this may add a lot of variables to your model.
+
+
+### Label Encoding
+
+This is just the pure turning of factors into numerics (could for dummy coding or ordered variables, bad otherwise)
+
+We can do this with `step_integer`
+
+```{r}
+recipe(Sale_Price ~ ., data = train_ames) %>%
+  step_integer(MS_SubClass) %>%
+  prep(train_ames) %>%
+  bake(train_ames) %>%
+  count(MS_SubClass)
+```
+
+
+## Dimension Reduction
+
+This is an alternative to the previous options for filtering out non-informative features. PCA is particularly nice when we are trying to reduce the number of dimensions (variables) we use.  We will create new components, then keep the components that keep, say, 95% of the variance.
+
+```{r}
+recipe(Sale_Price ~ ., dat = train_ames) %>%
+  step_center(all_numeric()) %>%
+  step_scale(all_numeric()) %>%
+  step_pca(all_numeric(), threshold = 0.95)
+```
+
+## Putting it all together
+
+In general, you may want to consider the following (in order):
+
+1. Filter out zero or near-zero variance features
+2. Perform imputation if required
+3. Normalize to resolve numeric feature skewness
+4. Standardize (center and scale) numeric features
+5. Perform dimension reduction on numeric features
+6. Do dummy encodings for categorical features
+
+
+
+### Data leakage
+
+This ocurs when information from outside the training data set is used to create the model.  Data leakage often occurs during the data preprocessing period.  To help stop this, you should do all feature engineering in isolation of each resampling iteration.  In other words, we should apply our feature engineering blueprint to each resample independently (sample, then process).
+
+### Putting the process together
+
+Let's put everything together to see if we can improve our prediction error compared to the results in the previous chapter.
+
+The recipes package (which has been used throughout the process) has three main steps when applying feature engineering:
+
+1. `recipe`: where you define your feature engineering steps to create your blueprint
+2. `prep` (prepare): estiamte feature engineering parameters based on training data.
+3. `bake`: apply the blueprint to new data.
+
+In receipe you supply the instructions.  This includes the formula of interest and then you sequentially add feature engineering steps with `step_xxx()`.  
+
+```{r}
+blue_print <- recipe(Sale_Price ~ ., data = train_ames) %>%
+  step_nzv(all_nominal()) %>% # removing near-zero variance features that are categorical
+  step_integer(matches("Qual|Cond|QC|Qu")) %>% # make into integers our quality based features
+  step_center(all_numeric(), -all_outcomes()) %>% # center all numeric features that aren't the DV
+  step_scale(all_numeric(), -all_outcomes()) %>% # scale all numeric features that aren't the DV
+  step_pca(all_numeric(), -all_outcomes()) # apply PCA to all numeric features
+
+blue_print
+```
+
+Then you train this blueprint on some training data.  Remember, there are many feature engineering steps that we do not want to train on the test data (standardize and PCA) as this could create data leakage. So in this step we estimate these parameters on the training data of interest:
+
+```{r}
+prepare <- prep(blue_print, training = train_ames)
+
+prepare
+```
+
+Lastly, we apply our blueprint to the new data (the training data or future test data) with `bake()`:
+
+```{r}
+baked_train <- bake(prepare, new_data = train_ames) 
+baked_test <- bake(prepare, new_data = test_ames)
+
+baked_train
+```
+
+
+The caret package can also hepl at this stage.  We only need to specify the blueprint and `caret` will automatically prepare and bake within each reample.  We will use almost the exact same steps, but this time we won't do PCA and will be step_dummy
+
+```{r}
+blue_print_2 <- recipe(Sale_Price ~ ., data = train_ames) %>%
+  step_nzv(all_nominal()) %>% # removing near-zero variance features that are categorical
+  step_integer(matches("Qual|Cond|QC|Qu")) %>% # make into integers our quality based features
+  step_center(all_numeric(), -all_outcomes()) %>% # center all numeric features that aren't the DV
+  step_scale(all_numeric(), -all_outcomes()) %>% # scale all numeric features that aren't the DV
+  step_dummy(all_nominal(), -all_outcomes(), one_hot = TRUE)
+```
+
+Next we apply the same resampling method and hyperparameter search grid as we did in the previous chapter.  The only difference is that when we trai nour resample models, we will supply the blueprint as the first argument and then the package takes care of the rest.
+
+```{r}
+# create a resampling method
+cv <- trainControl(
+  method = "repeatedcv",
+  number = 10,
+  repeats = 5
+)
+
+
+# create hyperparameter grid search
+hyper_grid <- expand.grid(k = seq(2, 25, by = 1)) 
+
+
+# fit knn model and perform grid search
+knn_fit2 <- train(
+  blue_print_2,
+  data = train_ames,
+  method = "knn",
+  trControl = cv,
+  tuneGrid = hyper_grid,
+  metric = "RMSE"
+)
+```
+
+
+Now let's look at our model results:
+```{r}
+# print model results
+knn_fit2
+
+# plot corss validation results
+ggplot(knn_fit2)
+```
+
+
+We improved our model by reducing our prediction error by about 10,000 dollars by just doing simple feature engineering!
+
+
+
