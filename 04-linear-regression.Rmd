@@ -252,3 +252,11 @@ plot(pls_model)
 pls_model$results
 ```
 
+## Variable importance
+
+One nice feature is to determine which variables are the most important. We can use `vip::vip()` to extract and plot the most important variables. The importance measure is normalized from 100 (most important) to 0 (least important). Figure 4.11 illustrates that the top 4 most important variables are `Gr_liv_Area`, `First_Flr_SF`, `Garage_Area`, and `Garage_Cars` respectively.
+
+```{r}
+vip(pls_model, num_features = 20, method = "model")
+```
+
