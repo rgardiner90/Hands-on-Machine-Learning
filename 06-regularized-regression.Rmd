@@ -1,0 +1,273 @@
+# Regularized Regression
+
+
+Linear models are very effective and simple to implement and interpret.  However, in many datasets today, we have a large number of features.  when you grow in features, certain assumptions typically break down and we start to overfit the training data.  *Regularization* methods provide a means to costrain or regularize the estimated coefficients, which can reduce the variance and decrease out of sample error.
+
+
+```{r}
+library(tidyverse) # becasue
+library(recipes) # feature engineering
+library(glmnet) # implementing regularized regression
+library(caret) # automating the tuning process
+library(vip) # variable importance
+library(AmesHousing)
+```
+
+```{r}
+set.seed(05271990)
+
+ames <- make_ames() # Ames house prices dataset
+
+index_ames <- createDataPartition(ames$Sale_Price, p = 0.7, list = FALSE)
+train_ames <- ames[index_ames, ]
+test_ames <- ames[-index_ames, ]
+```
+
+
+## Why Use Regularized Regression?
+
+Having a large number of features invites additional issues in using classic regression models. For one, having a large number of features makes the model much less interpretable. Additionally, when p > n, there are many (in fact infinite) solutions to the OLS problem! In such cases, it is useful (and practical) to assume that a smaller subset of the features exhibit the strongest effects (something called the bet on sparsity principal (see Hastie, Tibshirani, and Wainwright 2015, 2).). For this reason, we sometimes prefer estimation techniques that incorporate feature selection. One approach to this is called hard thresholding feature selection, which includes many of the traditional linear model selection approaches like forward selection and backward elimination. These procedures, however, can be computationally inefficient, do not scale well, and treat a feature as either in or out of the model (hence the name hard thresholding). In contrast, a more modern approach, called soft thresholding, slowly pushes the effects of irrelevant features toward zero, and in some cases, will zero out entire coefficients. As will be demonstrated, this can result in more accurate models that are also easier to interpret. With wide data, one alternative to OLS is to use regularized regression to constrain the coefficient estimates.  
+
+The objective function of regularized regression is similar, but adds a penalty term P: minimiaze(SSE + P). This penalty parameter constrains the size of the coefficients such that the only way the coefficients can increase is if we experience a comparable decrease in the sum of squared errors (SSE).
+
+There are three common penalty parameters we can use:
+
+1. Ridge
+2. Lasso
+3. Elastic net (ENET) which is a combo of the two.
+
+Ridge Rgression: n essence, the ridge regression model pushes many of the correlated features toward each other rather than allowing for one to be wildly positive and the other wildly negative. In addition, many of the less-important features also get pushed toward zero. This helps to provide clarity in identifying the important signals in our data. However, ridge regression does not perform feature selection and will retain all available features in the final model. Therefore, a ridge model is good if you believe there is a need to retain all features in your model yet reduce the noise that less influential variables may create (e.g., in smaller data sets with severe multicollinearity). If greater interpretation is necessary and many of the features are redundant or irrelevant then a lasso or elastic net penalty may be preferable.
+
+Lasso (least absolute srinkage and selection operator): unlike ridge regresion the lasso penalty will actually push coefficients al lthe way to zero.  Switched to hte lasso penalty not only improves the model, but also conducts automated feature selectin.
+
+
+## Implementation
+
+While extremely fast, `glmnet` only accepts non-formula XY interfact, so prior to modeling we need to seprate out feature and target sets (we will also do a log transformation, but that isn't a necessary requirement for `glmnet`).
+
+```{r}
+# the [, -1] gets rid of the DV
+X <- model.matrix(Sale_Price ~ ., train_ames)[, -1]
+Y <- log(train_ames$Sale_Price)
+```
+
+
+The alpha parameter tells the package to perform a ridge (`alpha = 0`), lasso (`alpha = 1`) or elastic net (`0 < alpha < 1`) model.  By defualt, `glmnet` will do two things that you should be aware of:
+
+1. Since regularized methods apply a penalty to the coefficients, we need to ensure our coefficients are on a common scale.  If not, then predictors with naturally larger values (e.g., total square footnote) will be penalized more than predictors with natrually smaller values.  The package will standardized your preidctors autmoatically, but you can turn this off with `standardized = FALSE`.  
+2. The package will fit ridge models acrss a wide range of $\lambda$ values.
+
+```{r}
+ridge <- glmnet(
+  x = X,
+  y = Y,
+  alpha = 0
+)
+
+plot(ridge , xvar = "lambda")
+```
+
+
+We can get exact lambda values by calling `ridge$lambda`.  Although the package will set 100 values that are data derived, you can adjust this (and may likely want to).  You can also view a particular model's coefficient using `coef()`.  `glmnet` stores all the coefficients for each model in order of largest to smallest $\lambda$.  Here we just peak at the two largest coefficients.  You can see how the largest $\lambda$ value ahs pushed most of these coefficients to nearly 0.
+
+```{r}
+# lambdas applied to penalty parameter
+ridge$lambda %>%
+  head()
+
+# small lambda results in large coefficients
+coef(ridge)[c("Latitude", "Overall_QualVery_Excellent"), 100]
+
+# large lambda results in small coefficients
+coef(ridge)[c("Latitude", "Overall_QualVery_Excellent"), 1]
+```
+
+At this point, we don't understand how much improvement we are experiencing in our loss function across various $\lambda$ values.
+
+
+
+## Tuning
+
+TO identify the optimal $\lambda$ value we need to use k-fold cross validation (CV).  We can use `cv.glmnet()` to perform this, which uses 10 folds.  Side note: by default, `cv.glmnet` uses MSE as the loss function, but you can change it to MAE for continuous outcomes by changing the type.measure argument.
+
+
+```{r}
+# CV ridge regression
+ridge <- cv.glmnet(
+  x = X,
+  y = Y,
+  alpha = 0
+)
+
+lasso <- cv.glmnet(
+  x = X,
+  y = Y,
+  alpha = 1
+)
+
+# plot results
+par(mfrow = c(1, 2)) 
+plot(ridge, main = "Ridge penalty\n\n")
+plot(lasso, main = "Lasso penalty\n\n")
+```
+
+
+The far left dotted line represents the lambda with the smallest MSE and the second line represents the lambda with an MSE within one standard error of the minimum MSE.
+
+The number at the top of the figure show how many features are in the model as we move along the different lambda values.  Also, because we see a slight lowering as we move right, we can say that OLS regression would have overfit the data.
+
+```{r}
+# ridge model
+min(ridge$cvm) # minimum mse
+ridge$lambda.min # lambda for minimum mse
+
+ridge$cvm[ridge$lambda == ridge$lambda.1se] # 1-SE rule
+ridge$lambda.1se # lambda for this MSE
+
+
+# lasso model
+min(lasso$cvm)
+lasso$lambda.min
+
+lasso$cvm[lasso$lamba == lasso$lambda.1se]
+lasso$lambda.1se
+
+```
+
+We can also assess this visually below.  THe dashed red line represents lambda with the smallest MSE and the dashed blue line represents largest lambda values that fall within one standard error of the minimum MSE.  This shows how much we cna constrain the coefficients while still maximizing predictive accuracy.
+
+
+
+```{r}
+ridge_min <- glmnet(
+  x = X, 
+  y = Y,
+  alpha = 0
+)
+
+lasso_min <- glmnet(
+  x = X, 
+  y = Y,
+  alpha = 1
+)
+
+
+par(mfrow = c(1, 2))
+plot(ridge_min, xvar = "lambda", main = "Ridge\n")
+abline(v = log(ridge$lambda.min), col = "red", lty = "dashed")
+abline(v = log(ridge$lambda.1se), col = "blue", lty = "dashed")
+
+
+plot(lasso_min, xvar = "lambda", main = "Lasso\n")
+abline(v = log(lasso$lambda.min), col = "red", lty = "dashed")
+abline(v = log(lasso$lambda.1se), col = "blue", lty = "dashed")
+```
+
+If we want to use elastic net, we set the `alpha` to something between 0 and 1.  A value of 0.5 would use equal parts ridge and lasso.  We an use the caret package to automate the tuning process (though it will take some time). The results show that our best RMSE is at an alpha of 0.1 and a lambda of 0.04688.
+
+```{r}
+set.seed(123)
+
+cv_glmnet <- train(
+  x = X,
+  y = Y,
+  method = "glmnet",
+  preProc = c("zv", "center", "scale"),
+  trControl = trainControl(method = "cv", number = 10),
+  tuneLength = 10
+)
+
+# model with the lowerst RMSE
+cv_glmnet$bestTune
+
+# plot cross-validatd rmse
+ggplot(cv_glmnet)
+```
+
+So how does this compare to our previous best model for the Ames data set? Keep in mind that for this chapter we  
+log transformed the response variable (Sale_Price). Consequently, to provide a fair comparison to our previously obtained PLS model’s RMSE of 29,000, we need to re-transform our predicted values. The following illustrates that our optimal regularized model achieved an RMSE of 23,412.53. Introducing a penalty parameter to constrain the coefficients provided quite an improvement over our previously obtained dimension reduction approach.
+
+
+```{r}
+pred <- predict(cv_glmnet, X)
+
+RMSE(exp(pred), exp(Y))
+```
+
+
+
+
+## Feature Interpretation
+
+
+Variable importance in regularized regression is similar to that of OLS or logistic regression.  In this one, we are seeing the size of the standardized coefficients.  We see similar results (though different ordering) as with our Partial Least Squares:
+
+```{r}
+vip(cv_glmnet, num_features = 20, bar = FALSE)
+```
+
+## Attrition data
+
+Let's see how this would work on the attrition data (our cv accuracy for logistic was abot 86%).  Can we improve by using regularized regression?
+
+```{r}
+library(ROCR)
+
+set.seed(123)
+
+df <- attrition
+
+churn_split <- initial_split(df, prop = 0.7, strata = "Attrition")
+train <- training(churn_split)
+test <- testing(churn_split)
+```
+
+Now that we have our dataset, let's run the regression then a regularized logistic regression
+```{r}
+glm_mod <- train(
+  Attrition ~ .,
+  data = train,
+  method = "glm",
+  family = "binomial",
+  preProc = c("zv", "center", "scale"),
+  trControl = trainControl(method = "cv", number = 10)
+)
+
+
+penalized_mod <- train(
+  Attrition ~ .,
+  data = train,
+  method = "glmnet",
+  family = "binomial",
+  preProc = c("zv", "center", "scale"),
+  trControl = trainControl(method = "cv", number = 10),
+  tuneLength = 10
+)
+
+penalized_mod
+
+summary(resamples(list(
+  logistic_model = glm_mod, 
+  penalized_model = penalized_mod
+  )))$statistics$Accuracy
+```
+
+We get about 3% points higher by using the penalized model
+
+
+
+## Final Thoughts
+
+Regularized regression is incredibly helpful, especially dealing with a large number of features!  there are, however, a few limitation/pre-processing that needs to occur.
+
+1. all inputs must be numeric, so you have to ensure that it is taken care of before (usually dummy coding can help).
+2. It odesn't know how to automatically deal with missing data, so you have to handle that before.  
+3. It is not robust to outliers.
+4. We still assume a monotonic linear relationship (and doesn't consider interaction effects).
+
+
+
+
+
+
+

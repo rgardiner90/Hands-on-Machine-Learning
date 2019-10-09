@@ -1,0 +1,166 @@
+# Logistic Regression
+
+Logistic regression is similar in many ways to OLS regression, with the major caveat that it is for a binary variable.
+
+## Prerequisites
+
+```{r}
+library(tidyverse)
+library(rsample)
+library(caret)
+library(vip)
+library(ROCR)
+```
+
+We will use the employee attrition data to predict the variable `Attrition`.  We will also set aside 30% of the data to assess the generalizability error.
+
+```{r}
+df <- attrition %>%
+  mutate_if(is.ordered, factor, ordered = FALSE)
+
+
+
+# creating training (70%) and test (30%) sets using the rsample
+
+set.seed(123)
+
+split_churn <- initial_split(df, prop = .7, strata = "Attrition")
+train_churn <- training(split_churn)
+test_churn <- testing(split_churn)
+```
+
+## Simple logistic regression
+
+First we will run two models that are predicting probability of attrition.  One does monthly income, the other one does overtime.
+
+```{r}
+model1 <- glm(Attrition ~ MonthlyIncome, family = "binomial", data = train_churn)
+model2 <- glm(Attrition ~ OverTime, family = "binomial", data = train_churn)
+```
+
+The results below show that raising income lowers attrition while working overtime increases attrition.
+
+```{r}
+summary(model1)
+summary(model2)
+```
+
+
+
+## Multiple Logistic Regression
+
+```{r}
+model3 <- glm(Attrition ~ MonthlyIncome + OverTime, family = "binomial",
+              data = train_churn)
+summary(model3)
+```
+
+## Assessing model accuracy
+
+We are going to run 3 different models that has a different number of IVs
+```{r}
+set.seed(123)
+
+cv_model1 <- train(
+  Attrition ~ MonthlyIncome,
+  data = train_churn,
+  method = "glm",
+  family = "binomial",
+  trControl = trainControl(method = "cv", number = 10)
+)
+
+
+cv_model2 <- train(
+  Attrition ~ MonthlyIncome + OverTime,
+  data = train_churn,
+  method = "glm",
+  family = "binomial",
+  trControl = trainControl(method = "cv", number = 10)
+)
+
+cv_model3 <- train(
+  Attrition ~ .,
+  data = train_churn,
+  method = "glm",
+  family = "binomial",
+  trControl = trainControl(method = "cv", number = 10)
+)
+
+
+# extract the out of sample performnace measures
+
+estimates <- summary(
+  resamples(
+    list(
+      model1 = cv_model1,
+      model2 = cv_model2,
+      model3 = cv_model3
+    )
+  )
+)
+
+estimates$statistics$Accuracy
+```
+
+We see that the first 2 models have an accuracy of about 83% while the full model has about 87%
+
+We can get an even better understanding of the accuracy by asssessing the confusion matrix.  To compute a confusion matrix, we need to supply our model's predicted class and the actual results fro mteh training data.  One particularly interesting finding is that while our model is good at predicted cases of non-attrition (high specificity), our model does a particularly poor job at predicted actual cases of attrition (not the low sensitivity).
+
+```{r}
+pred_class <- predict(cv_model3, train_churn)
+
+confusionMatrix(
+  data = relevel(pred_class, ref = "Yes"),
+  reference = relevel(train_churn$Attrition, ref = "Yes")
+  )
+```
+
+
+Consequently, if we simply predicted "No" for every employee we would still get an accuracy rate of 83.9%. Therefore, our goal is to maximize our accuracy rate over and above this no information baseline while also trying to balance sensitivity and specificity. To that end, we plot the ROC curve (section 2.6) which is displayed in Figure 5.4. If we compare our simple model (cv_model1) to our full model (cv_model3), we see the lift achieved with the more accurate model.
+
+```{r}
+# Compute predicted probabilities
+m1_prob <- predict(cv_model1, train_churn, type = "prob")$Yes
+m3_prob <- predict(cv_model3, train_churn, type = "prob")$Yes
+
+# Compare AUC metrics for cv_model1 and cv_model3
+perf1 <- prediction(m1_prob, train_churn$Attrition) %>%
+  performance(measure = "tpr", x.measure = "fpr")
+
+perf2 <- prediction(m3_prob, train_churn$Attrition) %>%
+  performance(measure = "tpr", x.measure = "fpr")
+
+# plot ROC curves for cv_model1 and cv_model3
+plot(perf1, color = "black", lty = 2)
+plot(perf2, col = "blue", add = TRUE)
+legend(0.8, 0.2, legend = c("cv_model1", "cv_model3"),
+       col = c("black", "blue"), lty = 2:1, cex = 0.6)
+```
+
+As with OLS, we can also use Partial Least Squares logistic regression to see if reducing the number of dimensions helps (not really):
+
+```{r}
+cv_model_pls <- train(
+  Attrition ~ ., 
+  data = train_churn, 
+  method = "pls",
+  family = "binomial",
+  trControl = trainControl(method = "cv", number = 10),
+  preProcess = c("zv", "center", "scale"),
+  tuneLength = 16
+)
+
+cv_model_pls$bestTune
+
+ggplot(cv_model_pls)
+```
+
+
+### Feature Importance
+
+As with OLS we can use `vip()` to find the most important variables in terms of z-statistic.
+```{r}
+vip(cv_model3, num_features = 20)
+```
+
+Though we may have this in terms of z-statistics, we have to remember that the linear relationship happens on the logit scale, not the probability scale.
